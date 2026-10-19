@@ -300,7 +300,7 @@ def main():
             "GV theo DO": "{:,.0f}",
             "GV theo HĐ": "{:,.0f}",
             "Chênh lệch GV": "{:+,.0f}",
-        }).applymap(
+        }).map(
             lambda v: "color: red" if isinstance(v, (int, float)) and v < -0.001 else
                       ("color: green" if isinstance(v, (int, float)) and v > 0.001 else ""),
             subset=["Chênh lệch KL", "Chênh lệch GV"],
