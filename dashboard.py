@@ -40,20 +40,20 @@ def search_read_all(mdl, uid: int, model: str, domain: list, fields: list) -> li
 
 
 @st.cache_data(ttl=300, show_spinner="Đang tải dữ liệu từ Odoo...")
-def fetch_data() -> list[dict]:
+def fetch_data() -> tuple[list[dict], list[str]]:
     common = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/common", allow_none=True)
     uid = common.authenticate(DB, USER, PWD, {})
     if not uid:
         st.error("Xác thực Odoo thất bại. Kiểm tra cấu hình Secrets.")
-        return []
+        return [], []
     mdl = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/object", allow_none=True)
 
     sales = search_read_all(mdl, uid, "sale.order", [
         ["state", "in", ["sale", "done"]],
-    ], ["id", "name", "partner_id", "order_line"])
+    ], ["id", "name", "partner_id", "order_line", "project_id"])
 
     if not sales:
-        return []
+        return [], []
 
     sol_ids = []
     for so in sales:
@@ -114,6 +114,7 @@ def fetch_data() -> list[dict]:
     categ_map = {c["id"]: c for c in categs}
 
     so_map = {so["id"]: so for so in sales}
+    project_names = set()
 
     rows = []
     for sol in so_lines:
@@ -137,7 +138,11 @@ def fetch_data() -> list[dict]:
         if isinstance(prod_name, dict):
             prod_name = prod_name.get("vi_VN", prod_name.get("en_US", str(prod_name)))
 
+        project_name = so.get("project_id", [False, ""])[1] if so.get("project_id") else "(Không có dự án)"
+        project_names.add(project_name)
+
         rows.append({
+            "Dự án": project_name,
             "Mã SO": so.get("name", ""),
             "Khách hàng": (so.get("partner_id", [False, ""])[1] if so.get("partner_id") else ""),
             "Sản phẩm": prod_name,
@@ -152,10 +157,10 @@ def fetch_data() -> list[dict]:
             "Chênh lệch GV": qty_diff * unit_cost,
         })
 
-    return rows
+    return rows, sorted(project_names)
 
 
-def build_excel(df: pd.DataFrame) -> bytes:
+def build_excel(df: pd.DataFrame, project_filter: str = "Tất cả") -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Đối chiếu DO vs HĐ"
@@ -168,19 +173,21 @@ def build_excel(df: pd.DataFrame) -> bytes:
         top=Side(style="thin"), bottom=Side(style="thin"),
     )
 
-    ws.merge_cells("A1:L1")
-    title_cell = ws["A1"]
-    title_cell.value = "BÁO CÁO ĐỐI CHIẾU PHIẾU GIAO (DO) vs HÓA ĐƠN"
-    title_cell.font = Font(name="Arial", bold=True, size=14, color="2F5496")
-    title_cell.alignment = Alignment(horizontal="center")
+    ws.merge_cells("A1:M1")
+    ws["A1"].value = "BÁO CÁO ĐỐI CHIẾU PHIẾU GIAO (DO) vs HÓA ĐƠN"
+    ws["A1"].font = Font(name="Arial", bold=True, size=14, color="2F5496")
+    ws["A1"].alignment = Alignment(horizontal="center")
 
-    ws.merge_cells("A2:L2")
-    ws["A2"].value = f"Ngày xuất: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    ws.merge_cells("A2:M2")
+    subtitle = f"Ngày xuất: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    if project_filter != "Tất cả":
+        subtitle += f" — Dự án: {project_filter}"
+    ws["A2"].value = subtitle
     ws["A2"].font = Font(name="Arial", size=10, italic=True, color="666666")
     ws["A2"].alignment = Alignment(horizontal="center")
 
     headers = [
-        ("Mã SO", 12), ("Khách hàng", 30), ("Sản phẩm", 30), ("ĐVT", 8),
+        ("Dự án", 30), ("Mã SO", 12), ("Khách hàng", 30), ("Sản phẩm", 30), ("ĐVT", 8),
         ("PP Giá vốn", 12), ("SL Phiếu giao (DO)", 18), ("SL Hóa đơn", 15),
         ("Chênh lệch KL", 16), ("ĐG vốn BQ", 16), ("GV theo DO", 18),
         ("GV theo HĐ", 18), ("Chênh lệch GV", 18),
@@ -193,7 +200,7 @@ def build_excel(df: pd.DataFrame) -> bytes:
         cell.border = thin_border
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
-    col_keys = ["Mã SO", "Khách hàng", "Sản phẩm", "ĐVT", "PP Giá vốn",
+    col_keys = ["Dự án", "Mã SO", "Khách hàng", "Sản phẩm", "ĐVT", "PP Giá vốn",
                 "SL DO", "SL HĐ", "Chênh lệch KL", "ĐG vốn BQ",
                 "GV theo DO", "GV theo HĐ", "Chênh lệch GV"]
     data_font = Font(name="Arial", size=10)
@@ -206,36 +213,36 @@ def build_excel(df: pd.DataFrame) -> bytes:
             cell = ws.cell(row=row_idx, column=col_idx, value=row[key])
             cell.border = thin_border
             cell.font = data_font
-            if col_idx in (6, 7, 8):
+            if col_idx in (7, 8, 9):
                 cell.number_format = "#,##0.000"
-            elif col_idx in (9, 10, 11, 12):
+            elif col_idx in (10, 11, 12, 13):
                 cell.number_format = "#,##0"
-            if col_idx == 8 and has_diff:
+            if col_idx == 9 and has_diff:
                 cell.font = red_font if row["Chênh lệch KL"] < 0 else green_font
-            if col_idx == 12 and has_diff:
+            if col_idx == 13 and has_diff:
                 cell.font = red_font if row["Chênh lệch GV"] < 0 else green_font
 
     total_row = 5 + len(df)
     total_fill = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
-    ws.merge_cells(f"A{total_row}:K{total_row}")
+    ws.merge_cells(f"A{total_row}:L{total_row}")
     label = ws.cell(row=total_row, column=1, value="TỔNG CHÊNH LỆCH GIÁ VỐN")
     label.font = Font(name="Arial", bold=True, size=11)
     label.fill = total_fill
     label.alignment = Alignment(horizontal="right")
     label.border = thin_border
-    for c in range(2, 12):
+    for c in range(2, 13):
         ws.cell(row=total_row, column=c).fill = total_fill
         ws.cell(row=total_row, column=c).border = thin_border
 
     total_val = df["Chênh lệch GV"].sum()
-    tc = ws.cell(row=total_row, column=12, value=total_val)
+    tc = ws.cell(row=total_row, column=13, value=total_val)
     tc.font = Font(name="Arial", bold=True, size=12, color="CC0000" if total_val < 0 else "008000")
     tc.fill = total_fill
     tc.number_format = "#,##0"
     tc.border = thin_border
 
     ws.freeze_panes = "A5"
-    ws.auto_filter.ref = f"A4:L{total_row - 1}"
+    ws.auto_filter.ref = f"A4:M{total_row - 1}"
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -244,35 +251,91 @@ def build_excel(df: pd.DataFrame) -> bytes:
 
 def main():
     st.set_page_config(page_title="Đối chiếu DO vs HĐ", page_icon="📊", layout="wide")
+    st.title("📊 Đối chiếu Phiếu giao (DO) vs Hóa đơn")
+    st.caption(f"Nguồn: {URL} — DB: {DB}")
 
-    rows = fetch_data()
+    if st.button("🔄 Tải lại dữ liệu", type="primary"):
+        st.cache_data.clear()
+
+    rows, project_names = fetch_data()
 
     if not rows:
         st.warning("Không có dữ liệu.")
         return
 
     df = pd.DataFrame(rows)
-    excel_bytes = build_excel(df)
-    fname = f"DoiChieu_DO_vs_HoaDon_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
 
-    import base64
-    b64 = base64.b64encode(excel_bytes).decode()
-    auto_download = f'''
-        <html><body>
-        <script>
-            var link = document.createElement("a");
-            link.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}";
-            link.download = "{fname}";
-            document.body.appendChild(link);
-            link.click();
-        </script>
-        <p style="font-family:Arial; font-size:16px; text-align:center; margin-top:40px;">
-            ✅ Đang tải file <b>{fname}</b>...<br><br>
-            Nếu file chưa tải, <a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{fname}">bấm vào đây</a>.
-        </p>
-        </body></html>
-    '''
-    st.components.v1.html(auto_download, height=150)
+    # --- Filters ---
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        project_options = ["Tất cả"] + project_names
+        filter_project = st.selectbox("Dự án", project_options)
+    with f2:
+        filter_diff = st.selectbox("Chênh lệch", ["Tất cả", "Chỉ có chênh lệch", "Không chênh lệch"])
+    with f3:
+        partners = ["Tất cả"] + sorted(df["Khách hàng"].unique().tolist())
+        filter_partner = st.selectbox("Khách hàng", partners)
+    with f4:
+        costings = ["Tất cả"] + sorted(df["PP Giá vốn"].unique().tolist())
+        filter_costing = st.selectbox("PP Giá vốn", costings)
+
+    filtered = df.copy()
+    if filter_project != "Tất cả":
+        filtered = filtered[filtered["Dự án"] == filter_project]
+    if filter_diff == "Chỉ có chênh lệch":
+        filtered = filtered[filtered["Chênh lệch KL"].abs() > 0.001]
+    elif filter_diff == "Không chênh lệch":
+        filtered = filtered[filtered["Chênh lệch KL"].abs() <= 0.001]
+    if filter_partner != "Tất cả":
+        filtered = filtered[filtered["Khách hàng"] == filter_partner]
+    if filter_costing != "Tất cả":
+        filtered = filtered[filtered["PP Giá vốn"] == filter_costing]
+
+    # --- KPI ---
+    total_rows = len(filtered)
+    rows_with_diff = len(filtered[filtered["Chênh lệch KL"].abs() > 0.001])
+    total_cost_diff = filtered["Chênh lệch GV"].sum()
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Tổng dòng", f"{total_rows:,}")
+    k2.metric("Có chênh lệch", f"{rows_with_diff:,}")
+    k3.metric("Tổng chênh GV", f"{total_cost_diff:,.0f} ₫")
+    k4.metric("Cập nhật", datetime.now().strftime("%H:%M %d/%m"))
+
+    # --- Table ---
+    st.divider()
+    styled = filtered.style.format({
+        "SL DO": "{:.3f}",
+        "SL HĐ": "{:.3f}",
+        "Chênh lệch KL": "{:+.3f}",
+        "ĐG vốn BQ": "{:,.0f}",
+        "GV theo DO": "{:,.0f}",
+        "GV theo HĐ": "{:,.0f}",
+        "Chênh lệch GV": "{:+,.0f}",
+    }).map(
+        lambda v: "color: red" if isinstance(v, (int, float)) and v < -0.001 else
+                  ("color: green" if isinstance(v, (int, float)) and v > 0.001 else ""),
+        subset=["Chênh lệch KL", "Chênh lệch GV"],
+    )
+    st.dataframe(styled, use_container_width=True, height=500)
+
+    # --- Download ---
+    excel_bytes = build_excel(filtered, filter_project)
+    fname = f"DoiChieu_DO_vs_HoaDon_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    st.download_button(
+        "📥 Tải Excel",
+        data=excel_bytes,
+        file_name=fname,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    # --- Chart ---
+    if rows_with_diff > 0:
+        st.divider()
+        st.subheader("Biểu đồ chênh lệch giá vốn theo sản phẩm")
+        diff_df = filtered[filtered["Chênh lệch KL"].abs() > 0.001]
+        chart_data = diff_df.groupby("Sản phẩm")["Chênh lệch GV"].sum().sort_values()
+        st.bar_chart(chart_data)
 
 
 if __name__ == "__main__":
