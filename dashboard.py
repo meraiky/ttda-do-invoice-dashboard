@@ -244,13 +244,6 @@ def build_excel(df: pd.DataFrame) -> bytes:
 
 def main():
     st.set_page_config(page_title="Đối chiếu DO vs HĐ", page_icon="📊", layout="wide")
-    st.title("📊 Đối chiếu Phiếu giao (DO) vs Hóa đơn")
-    st.caption(f"Nguồn: {URL} — DB: {DB}")
-
-    col_refresh, col_download = st.columns([1, 1])
-    with col_refresh:
-        if st.button("🔄 Tải lại dữ liệu", type="primary"):
-            st.cache_data.clear()
 
     rows = fetch_data()
 
@@ -259,71 +252,27 @@ def main():
         return
 
     df = pd.DataFrame(rows)
+    excel_bytes = build_excel(df)
+    fname = f"DoiChieu_DO_vs_HoaDon_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
 
-    total_rows = len(df)
-    rows_with_diff = len(df[df["Chênh lệch KL"].abs() > 0.001])
-    total_cost_diff = df["Chênh lệch GV"].sum()
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Tổng dòng", f"{total_rows:,}")
-    k2.metric("Có chênh lệch", f"{rows_with_diff:,}")
-    k3.metric("Tổng chênh GV", f"{total_cost_diff:,.0f} ₫")
-    k4.metric("Cập nhật", datetime.now().strftime("%H:%M %d/%m"))
-
-    st.divider()
-    f1, f2, f3 = st.columns(3)
-    with f1:
-        filter_diff = st.selectbox("Lọc chênh lệch", ["Tất cả", "Chỉ có chênh lệch", "Không chênh lệch"])
-    with f2:
-        partners = ["Tất cả"] + sorted(df["Khách hàng"].unique().tolist())
-        filter_partner = st.selectbox("Khách hàng", partners)
-    with f3:
-        costings = ["Tất cả"] + sorted(df["PP Giá vốn"].unique().tolist())
-        filter_costing = st.selectbox("PP Giá vốn", costings)
-
-    filtered = df.copy()
-    if filter_diff == "Chỉ có chênh lệch":
-        filtered = filtered[filtered["Chênh lệch KL"].abs() > 0.001]
-    elif filter_diff == "Không chênh lệch":
-        filtered = filtered[filtered["Chênh lệch KL"].abs() <= 0.001]
-    if filter_partner != "Tất cả":
-        filtered = filtered[filtered["Khách hàng"] == filter_partner]
-    if filter_costing != "Tất cả":
-        filtered = filtered[filtered["PP Giá vốn"] == filter_costing]
-
-    st.dataframe(
-        filtered.style.format({
-            "SL DO": "{:.3f}",
-            "SL HĐ": "{:.3f}",
-            "Chênh lệch KL": "{:+.3f}",
-            "ĐG vốn BQ": "{:,.0f}",
-            "GV theo DO": "{:,.0f}",
-            "GV theo HĐ": "{:,.0f}",
-            "Chênh lệch GV": "{:+,.0f}",
-        }).map(
-            lambda v: "color: red" if isinstance(v, (int, float)) and v < -0.001 else
-                      ("color: green" if isinstance(v, (int, float)) and v > 0.001 else ""),
-            subset=["Chênh lệch KL", "Chênh lệch GV"],
-        ),
-        use_container_width=True,
-        height=500,
-    )
-
-    with col_download:
-        excel_bytes = build_excel(filtered)
-        st.download_button(
-            "📥 Tải Excel",
-            data=excel_bytes,
-            file_name=f"DoiChieu_DO_vs_HoaDon_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    if rows_with_diff > 0:
-        st.divider()
-        st.subheader("Biểu đồ chênh lệch giá vốn theo sản phẩm")
-        diff_df = filtered[filtered["Chênh lệch KL"].abs() > 0.001]
-        chart_data = diff_df.groupby("Sản phẩm")["Chênh lệch GV"].sum().sort_values()
-        st.bar_chart(chart_data)
+    import base64
+    b64 = base64.b64encode(excel_bytes).decode()
+    auto_download = f'''
+        <html><body>
+        <script>
+            var link = document.createElement("a");
+            link.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}";
+            link.download = "{fname}";
+            document.body.appendChild(link);
+            link.click();
+        </script>
+        <p style="font-family:Arial; font-size:16px; text-align:center; margin-top:40px;">
+            ✅ Đang tải file <b>{fname}</b>...<br><br>
+            Nếu file chưa tải, <a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{fname}">bấm vào đây</a>.
+        </p>
+        </body></html>
+    '''
+    st.components.v1.html(auto_download, height=150)
 
 
 if __name__ == "__main__":
